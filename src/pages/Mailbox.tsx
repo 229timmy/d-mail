@@ -29,20 +29,24 @@ import {
   AlertDialogHeader,
   AlertDialogContent,
   AlertDialogOverlay,
+  Spinner,
 } from '@chakra-ui/react'
 import { useState, useEffect, useRef } from 'react'
 import { useParams } from 'react-router-dom'
 import { FaEllipsisV, FaTrash, FaArchive, FaFlag, FaRegFlag } from 'react-icons/fa'
+import { supabase } from '../lib/supabase'
+import { useAuth } from '../contexts/AuthContext'
 
 interface Email {
   id: string
-  from: string
+  sender_address: string
   subject: string
-  content: string
-  receivedAt: Date
-  read: boolean
-  flagged?: boolean
-  toAddress: string
+  body_text: string | null
+  body_html: string | null
+  created_at: string
+  read_at: string | null
+  is_spam: boolean
+  recipient_address: string
 }
 
 interface EmailAddress {
@@ -111,17 +115,9 @@ const EmailSkeleton = () => {
   )
 }
 
-const generateRandomString = (length: number) => {
-  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789'
-  let result = ''
-  for (let i = 0; i < length; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length))
-  }
-  return result
-}
-
 const Mailbox = () => {
   const { emailId } = useParams()
+  const { user } = useAuth()
   const [currentAddress, setCurrentAddress] = useState<EmailAddress | null>(null)
   const [selectedEmails, setSelectedEmails] = useState<Set<string>>(new Set())
   const [expandedEmailId, setExpandedEmailId] = useState<string | null>(null)
@@ -138,124 +134,88 @@ const Mailbox = () => {
   const [emails, setEmails] = useState<Email[]>([])
   const observerTarget = useRef<HTMLDivElement>(null)
 
-  // Simulating fetching emails with pagination
-  const fetchEmails = async (pageNum: number, addressId?: string) => {
+  const fetchEmails = async (pageNum: number) => {
+    if (!user) return []
+
     try {
-      // Simulate API delay
-      await new Promise(resolve => setTimeout(resolve, 1000))
-      
-      // Simulate paginated data
-      const pageSize = 10
-      const mockEmails: Email[] = Array.from({ length: pageSize }, (_, i) => {
-        const email = {
-          id: `${pageNum}-${i}`,
-          from: `user${i}@example.com`,
-          subject: `Email Subject ${pageNum}-${i}`,
-          content: `This is the content of email ${pageNum}-${i}...`,
-          receivedAt: new Date(Date.now() - i * 3600000),
-          read: Math.random() > 0.3,
-          flagged: Math.random() > 0.8,
-          toAddress: currentAddress?.address || `${generateRandomString(8)}@d-mail.temp`,
-        }
-        return email
-      })
+      const pageSize = 20
+      const start = (pageNum - 1) * pageSize
+      const end = start + pageSize - 1
 
-      // Filter emails based on the current address
-      let filteredEmails = mockEmails
+      let query = supabase
+        .from('emails')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .range(start, end)
+
       if (currentAddress) {
-        filteredEmails = mockEmails.filter(email => email.toAddress === currentAddress.address)
+        query = query.eq('recipient_address', currentAddress.address)
+      } else if (emailId) {
+        // If emailId is provided but we don't have currentAddress yet,
+        // we need to first get the address
+        const { data: address } = await supabase
+          .from('email_addresses')
+          .select('address')
+          .eq('id', emailId)
+          .single()
+
+        if (address) {
+          query = query.eq('recipient_address', address.address)
+        }
       }
 
-      // Simulate end of data after 5 pages
-      if (pageNum >= 5) {
-        setHasMore(false)
-        return []
-      }
+      const { data, error } = await query
 
-      return filteredEmails
+      if (error) throw error
+
+      // Check if we have more data
+      const { count } = await supabase
+        .from('emails')
+        .select('*', { count: 'exact', head: true })
+        .eq('recipient_address', currentAddress?.address || '')
+
+      setHasMore(count ? start + pageSize < count : false)
+
+      return data || []
     } catch (error) {
       console.error('Error fetching emails:', error)
       return []
     }
   }
 
-  // Initial load
+  // Fetch current email address
   useEffect(() => {
-    setIsLoading(true)
-    setPage(1)
-    setHasMore(true)
-    setEmails([])
-    
-    // Only fetch emails if we have a valid context
-    if (currentAddress || !emailId) {
-      fetchEmails(1).then(newEmails => {
-        setEmails(newEmails)
-        setIsLoading(false)
-      })
-    }
-  }, [emailId, currentAddress])
-
-  // Infinite scroll observer
-  useEffect(() => {
-    const observer = new IntersectionObserver(
-      entries => {
-        if (entries[0].isIntersecting && hasMore && !isLoading && !isLoadingMore) {
-          loadMore()
-        }
-      },
-      { threshold: 0.1 }
-    )
-
-    if (observerTarget.current) {
-      observer.observe(observerTarget.current)
-    }
-
-    return () => observer.disconnect()
-  }, [hasMore, isLoading, isLoadingMore])
-
-  const loadMore = async () => {
-    if (isLoadingMore) return
-    
-    setIsLoadingMore(true)
-    const nextPage = page + 1
-    const newEmails = await fetchEmails(nextPage)
-    
-    setEmails(prev => [...prev, ...newEmails])
-    setPage(nextPage)
-    setIsLoadingMore(false)
-  }
-
-  // Simulating fetching the email address based on emailId
-  useEffect(() => {
-    if (!emailId) {
-      setCurrentAddress(null)
-      setIsAddressLoading(false)
-      return
-    }
-
-    setIsAddressLoading(true)
-    // This would normally be an API call
     const fetchAddress = async () => {
+      if (!emailId || !user) {
+        setCurrentAddress(null)
+        setIsAddressLoading(false)
+        return
+      }
+
       try {
-        // Include newly created addresses by getting them from localStorage
-        const storedAddresses = localStorage.getItem('emailAddresses')
-        const addresses: EmailAddress[] = storedAddresses 
-          ? JSON.parse(storedAddresses)
-          : [
-              { id: '1', address: 'personal@d-mail.temp', unreadCount: 3, customName: 'Personal' },
-              { id: '2', address: 'newsletter@d-mail.temp', unreadCount: 0, customName: 'Newsletters' },
-              { id: '3', address: 'shopping@d-mail.temp', unreadCount: 1, customName: 'Shopping' },
-            ]
+        const { data: address, error } = await supabase
+          .from('email_addresses')
+          .select('id, address, is_primary')
+          .eq('id', emailId)
+          .eq('user_id', user.id)
+          .single()
 
-        const address = addresses.find(a => a.id === emailId)
-        if (!address) {
-          setCurrentAddress(null)
-          setIsAddressLoading(false)
-          return
-        }
+        if (error) throw error
 
-        setCurrentAddress(address)
-        
+        // Get unread count
+        const { count: unreadCount } = await supabase
+          .from('emails')
+          .select('*', { count: 'exact', head: true })
+          .eq('recipient_address', address.address)
+          .is('read_at', null)
+
+        setCurrentAddress({
+          id: address.id,
+          address: address.address,
+          unreadCount: unreadCount || 0,
+          customName: address.is_primary ? 'Primary' : undefined
+        })
+
         // Reset emails when changing address
         setEmails([])
         setPage(1)
@@ -266,12 +226,39 @@ const Mailbox = () => {
         const newEmails = await fetchEmails(1)
         setEmails(newEmails)
         setIsLoading(false)
+      } catch (error) {
+        console.error('Error fetching address:', error)
+        setCurrentAddress(null)
       } finally {
         setIsAddressLoading(false)
       }
     }
+
     fetchAddress()
-  }, [emailId])
+  }, [emailId, user])
+
+  // Set up infinite scroll
+  useEffect(() => {
+    if (!observerTarget.current || isLoading || isLoadingMore || !hasMore) return
+
+    const observer = new IntersectionObserver(
+      async (entries) => {
+        if (entries[0].isIntersecting) {
+          setIsLoadingMore(true)
+          const nextPage = page + 1
+          const newEmails = await fetchEmails(nextPage)
+          setEmails(prev => [...prev, ...newEmails])
+          setPage(nextPage)
+          setIsLoadingMore(false)
+        }
+      },
+      { threshold: 1.0 }
+    )
+
+    observer.observe(observerTarget.current)
+
+    return () => observer.disconnect()
+  }, [observerTarget, isLoading, isLoadingMore, hasMore, page])
 
   const toggleEmailSelection = (emailId: string, e: React.MouseEvent) => {
     e.stopPropagation()
@@ -290,26 +277,71 @@ const Mailbox = () => {
     setIsDeleteDialogOpen(true)
   }
 
-  const handleDeleteConfirm = () => {
-    if (emailToDelete) {
+  const handleDeleteConfirm = async () => {
+    if (!emailToDelete) return
+
+    try {
+      const { error } = await supabase
+        .from('emails')
+        .delete()
+        .eq('id', emailToDelete)
+
+      if (error) throw error
+
       setEmails(emails.filter(email => email.id !== emailToDelete))
       setEmailToDelete(null)
+    } catch (error) {
+      console.error('Error deleting email:', error)
+    } finally {
+      setIsDeleteDialogOpen(false)
     }
-    setIsDeleteDialogOpen(false)
   }
 
   const handleBulkDeleteClick = () => {
     setIsBulkDeleteDialogOpen(true)
   }
 
-  const handleBulkDeleteConfirm = () => {
-    setEmails(emails.filter(email => !selectedEmails.has(email.id)))
-    setSelectedEmails(new Set())
-    setIsBulkDeleteDialogOpen(false)
+  const handleBulkDeleteConfirm = async () => {
+    try {
+      const { error } = await supabase
+        .from('emails')
+        .delete()
+        .in('id', Array.from(selectedEmails))
+
+      if (error) throw error
+
+      setEmails(emails.filter(email => !selectedEmails.has(email.id)))
+      setSelectedEmails(new Set())
+    } catch (error) {
+      console.error('Error deleting emails:', error)
+    } finally {
+      setIsBulkDeleteDialogOpen(false)
+    }
   }
 
-  const toggleEmailExpansion = (emailId: string) => {
+  const toggleEmailExpansion = async (emailId: string) => {
     setExpandedEmailId(expandedEmailId === emailId ? null : emailId)
+
+    // Mark as read if expanding
+    if (expandedEmailId !== emailId) {
+      try {
+        const { error } = await supabase
+          .from('emails')
+          .update({ read_at: new Date().toISOString() })
+          .eq('id', emailId)
+
+        if (error) throw error
+
+        // Update local state
+        setEmails(emails.map(email => 
+          email.id === emailId 
+            ? { ...email, read_at: new Date().toISOString() }
+            : email
+        ))
+      } catch (error) {
+        console.error('Error marking email as read:', error)
+      }
+    }
   }
 
   return (
@@ -324,11 +356,13 @@ const Mailbox = () => {
                   : 'All Emails'}
               </Heading>
             </Skeleton>
-            <Skeleton isLoaded={!isLoading}>
-              <Text fontSize="sm" color="gray.500">
-                {emails.length} messages • {emails.filter(e => !e.read).length} unread
-              </Text>
-            </Skeleton>
+            {emails.length > 0 && (
+              <Skeleton isLoaded={!isLoading}>
+                <Text fontSize="sm" color="gray.500">
+                  {emails.length} messages • {emails.filter(e => !e.read_at).length} unread
+                </Text>
+              </Skeleton>
+            )}
           </Box>
           {selectedEmails.size > 0 && (
             <Button
@@ -367,7 +401,7 @@ const Mailbox = () => {
                   p={4}
                   align="center"
                   cursor="pointer"
-                  bg={email.read ? undefined : 'gray.800'}
+                  bg={!email.read_at ? 'gray.800' : undefined}
                   _hover={{ bg: hoverBg }}
                   onClick={() => toggleEmailExpansion(email.id)}
                   position="relative"
@@ -381,33 +415,33 @@ const Mailbox = () => {
                     onClick={(e) => e.stopPropagation()}
                   />
                   <IconButton
-                    aria-label={email.flagged ? 'Unflag' : 'Flag'}
-                    icon={email.flagged ? <FaFlag /> : <FaRegFlag />}
+                    aria-label={email.is_spam ? 'Mark as Not Spam' : 'Mark as Spam'}
+                    icon={email.is_spam ? <FaFlag /> : <FaRegFlag />}
                     size="sm"
                     variant="ghost"
-                    colorScheme={email.flagged ? 'yellow' : 'gray'}
-                    opacity={email.flagged ? 1 : 0}
+                    colorScheme={email.is_spam ? 'yellow' : 'gray'}
+                    opacity={email.is_spam ? 1 : 0}
                     _groupHover={{ opacity: 1 }}
                     onClick={(e) => {
                       e.stopPropagation()
-                      // Toggle flag logic here
+                      // Toggle spam logic here
                     }}
                   />
-                  
+
                   <Box flex={1} ml={4}>
                     <Flex justify="space-between" align="center" mb={1}>
                       <Flex align="center" gap={3}>
-                        <Text fontWeight={email.read ? 'normal' : 'bold'}>
-                          {email.from}
+                        <Text fontWeight={!email.read_at ? 'bold' : 'normal'}>
+                          {email.sender_address}
                         </Text>
-                        {!email.read && (
+                        {!email.read_at && (
                           <Badge colorScheme="brand" variant="solid">
                             New
                           </Badge>
                         )}
                       </Flex>
                       <Text color="gray.500" fontSize="sm">
-                        {email.receivedAt.toLocaleTimeString([], { 
+                        {new Date(email.created_at).toLocaleTimeString([], { 
                           hour: '2-digit', 
                           minute: '2-digit' 
                         })}
@@ -415,14 +449,23 @@ const Mailbox = () => {
                     </Flex>
                     <Text 
                       fontSize="md" 
-                      fontWeight={email.read ? 'normal' : 'bold'}
+                      fontWeight={!email.read_at ? 'bold' : 'normal'}
                       mb={1}
                     >
                       {email.subject}
                     </Text>
                     <Text color="gray.400" fontSize="sm" noOfLines={expandedEmailId === email.id ? undefined : 1}>
-                      {email.content}
+                      {email.body_text || 'No text content'}
                     </Text>
+                    {expandedEmailId === email.id && email.body_html && (
+                      <Box 
+                        mt={4} 
+                        p={4} 
+                        bg="gray.700" 
+                        borderRadius="md"
+                        dangerouslySetInnerHTML={{ __html: email.body_html }}
+                      />
+                    )}
                   </Box>
 
                   <Menu>
@@ -461,7 +504,7 @@ const Mailbox = () => {
             {/* Infinite scroll trigger */}
             <Box ref={observerTarget} h="20px" />
 
-            {isLoadingMore && emails.length > 0 && (
+            {isLoadingMore && (
               <>
                 <EmailSkeleton />
                 <EmailSkeleton />

@@ -22,10 +22,13 @@ import {
   useDisclosure,
   useToast,
   ButtonGroup,
+  Spinner,
 } from '@chakra-ui/react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { FaInbox, FaPlus, FaTrash, FaCopy } from 'react-icons/fa'
 import { useState, useEffect } from 'react'
+import { supabase } from '../lib/supabase'
+import { useAuth } from '../contexts/AuthContext'
 
 interface EmailAddress {
   id: string
@@ -34,190 +37,240 @@ interface EmailAddress {
   customName?: string
 }
 
-const generateRandomString = (length: number) => {
-  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789'
-  let result = ''
-  for (let i = 0; i < length; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length))
-  }
-  return result
-}
-
 const Sidebar = () => {
   const navigate = useNavigate()
   const location = useLocation()
   const toast = useToast()
+  const { user } = useAuth()
   const activeBg = useColorModeValue('gray.700', 'gray.700')
   const hoverBg = useColorModeValue('gray.700', 'gray.600')
   const { isOpen, onOpen, onClose } = useDisclosure()
   const [newEmailName, setNewEmailName] = useState('')
-  const [addresses, setAddresses] = useState<EmailAddress[]>(() => {
-    const storedAddresses = localStorage.getItem('emailAddresses')
-    return storedAddresses 
-      ? JSON.parse(storedAddresses)
-      : [
-          { id: '1', address: 'personal@d-mail.temp', unreadCount: 3, customName: 'Personal' },
-          { id: '2', address: 'newsletter@d-mail.temp', unreadCount: 0, customName: 'Newsletters' },
-          { id: '3', address: 'shopping@d-mail.temp', unreadCount: 1, customName: 'Shopping' },
-        ]
-  })
+  const [addresses, setAddresses] = useState<EmailAddress[]>([])
+  const [isLoading, setIsLoading] = useState(true)
 
-  // Save addresses to localStorage whenever they change
+  // Fetch email addresses from Supabase
   useEffect(() => {
-    localStorage.setItem('emailAddresses', JSON.stringify(addresses))
-  }, [addresses])
+    const fetchAddresses = async () => {
+      if (!user) return
 
-  const createNewEmail = (customName?: string) => {
-    const name = customName || generateRandomString(10)
-    const newEmail: EmailAddress = {
-      id: generateRandomString(8),
-      address: `${name.toLowerCase()}@d-mail.temp`,
-      unreadCount: 0,
-      customName: customName
+      try {
+        const { data: emailAddresses, error } = await supabase
+          .from('email_addresses')
+          .select('id, address, is_primary, created_at')
+          .eq('user_id', user.id)
+          .order('created_at', { ascending: false })
+
+        if (error) throw error
+
+        // Get unread count for each address
+        const addressesWithCounts = await Promise.all(
+          emailAddresses.map(async (addr) => {
+            const { count, error: countError } = await supabase
+              .from('emails')
+              .select('*', { count: 'exact', head: true })
+              .eq('recipient_address', addr.address)
+              .is('read_at', null)
+
+            if (countError) throw countError
+
+            return {
+              id: addr.id,
+              address: addr.address,
+              unreadCount: count || 0,
+              customName: addr.is_primary ? 'Primary' : undefined
+            }
+          })
+        )
+
+        setAddresses(addressesWithCounts)
+      } catch (error) {
+        console.error('Error fetching addresses:', error)
+        toast({
+          title: 'Error fetching addresses',
+          description: 'Please try again later',
+          status: 'error',
+          duration: 3000,
+          isClosable: true,
+        })
+      } finally {
+        setIsLoading(false)
+      }
     }
-    setAddresses(prevAddresses => [...prevAddresses, newEmail])
-    setNewEmailName('')
-    onClose()
-    
-    // Navigate to the new email address's mailbox
-    navigate(`/mailbox/${newEmail.id}`)
-  }
 
-  const deleteAddress = (id: string, e: React.MouseEvent) => {
-    e.stopPropagation()
-    setAddresses(prevAddresses => prevAddresses.filter(addr => addr.id !== id))
-    
-    // If we're currently viewing the deleted address, navigate to all emails
-    if (location.pathname === `/mailbox/${id}`) {
-      navigate('/mailbox')
-    }
-  }
+    fetchAddresses()
+  }, [user, toast])
 
-  const copyAddress = async (address: string, e: React.MouseEvent) => {
-    e.stopPropagation()
+  const createNewEmail = async (customName?: string) => {
+    if (!user) return
+
     try {
-      await navigator.clipboard.writeText(address)
+      const address = `${customName?.toLowerCase() || Math.random().toString(36).substring(2, 12)}@d-mail.temp`
+      
+      const { data, error } = await supabase
+        .from('email_addresses')
+        .insert({
+          address,
+          user_id: user.id,
+          is_primary: false,
+        })
+        .select()
+        .single()
+
+      if (error) throw error
+
+      // Add the new address to the state
+      setAddresses(prev => [{
+        id: data.id,
+        address: data.address,
+        unreadCount: 0,
+        customName: customName
+      }, ...prev])
+
+      setNewEmailName('')
+      onClose()
+      
+      // Navigate to the new email address's mailbox
+      navigate(`/mailbox/${data.id}`)
+    } catch (error) {
+      console.error('Error creating email:', error)
       toast({
-        title: 'Address copied',
-        description: 'Email address copied to clipboard',
-        status: 'success',
-        duration: 2000,
-        isClosable: true,
-        position: 'top',
-      })
-    } catch (err) {
-      toast({
-        title: 'Failed to copy',
-        description: 'Could not copy address to clipboard',
+        title: 'Error creating email',
+        description: 'Please try again later',
         status: 'error',
-        duration: 2000,
+        duration: 3000,
         isClosable: true,
-        position: 'top',
       })
     }
+  }
+
+  const deleteAddress = async (id: string) => {
+    try {
+      const { error } = await supabase
+        .from('email_addresses')
+        .delete()
+        .eq('id', id)
+        .eq('user_id', user?.id)
+        .single()
+
+      if (error) throw error
+
+      setAddresses(prev => prev.filter(addr => addr.id !== id))
+      
+      // If we're currently viewing this mailbox, navigate away
+      if (location.pathname.includes(id)) {
+        navigate('/mailbox')
+      }
+    } catch (error) {
+      console.error('Error deleting address:', error)
+      toast({
+        title: 'Error deleting address',
+        description: 'Please try again later',
+        status: 'error',
+        duration: 3000,
+        isClosable: true,
+      })
+    }
+  }
+
+  if (isLoading) {
+    return (
+      <Box p={4}>
+        <Flex justify="center" align="center" h="100px">
+          <Spinner color="brand.300" />
+        </Flex>
+      </Box>
+    )
   }
 
   return (
-    <Box p={4}>
-      <VStack spacing={4} align="stretch">
+    <Box>
+      <VStack align="stretch" spacing={2}>
         <Button
-          leftIcon={<FaPlus />}
-          colorScheme="brand"
-          size="sm"
+          leftIcon={<FaInbox />}
+          variant="ghost"
+          justifyContent="flex-start"
           w="full"
-          onClick={onOpen}
-        >
-          New Email
-        </Button>
-
-        <Divider borderColor="gray.600" />
-
-        <Text fontSize="sm" color="gray.400" fontWeight="medium" mb={2}>
-          YOUR ADDRESSES
-        </Text>
-
-        <Box
-          py={4}
-          px={4}
-          w="full"
-          display="flex"
-          flexDir="column"
-          gap={1}
           bg={location.pathname === '/mailbox' ? activeBg : undefined}
           _hover={{ bg: hoverBg }}
           onClick={() => navigate('/mailbox')}
-          position="relative"
-          cursor="pointer"
-          role="group"
-          borderRadius="md"
-          transition="all 0.2s"
         >
-          <Flex w="full" align="center" justify="space-between">
-            <Icon as={FaInbox} color="brand.300" boxSize={4} />
-            <Badge colorScheme="brand" variant="solid" fontSize="xs">
-              {addresses.reduce((sum, addr) => sum + addr.unreadCount, 0)}
-            </Badge>
-          </Flex>
-          <Text fontSize="sm" color="gray.300" textAlign="left" noOfLines={1}>
-            All Emails
-          </Text>
-        </Box>
+          All Mail
+        </Button>
 
-        {addresses.map((addr) => (
-          <Box
-            key={addr.id}
-            py={4}
-            px={4}
-            w="full"
-            display="flex"
-            flexDir="column"
-            gap={1}
-            bg={location.pathname === `/mailbox/${addr.id}` ? activeBg : undefined}
-            _hover={{ bg: hoverBg }}
-            onClick={() => navigate(`/mailbox/${addr.id}`)}
-            position="relative"
-            cursor="pointer"
-            role="group"
-            borderRadius="md"
-            transition="all 0.2s"
-          >
-            <Flex w="full" align="center" justify="space-between">
-              <Icon as={FaInbox} color="brand.300" boxSize={4} />
-              {addr.unreadCount > 0 && (
-                <Badge colorScheme="brand" variant="solid" fontSize="xs">
-                  {addr.unreadCount}
-                </Badge>
-              )}
-            </Flex>
-            <Flex align="center" gap={2}>
+        <Button
+          leftIcon={<FaPlus />}
+          colorScheme="brand"
+          variant="ghost"
+          justifyContent="flex-start"
+          w="full"
+          onClick={onOpen}
+        >
+          New Address
+        </Button>
+
+        {addresses.length > 0 && <Divider />}
+
+        {addresses.map(address => (
+          <Box key={address.id}>
+            <Box
+              p={2}
+              cursor="pointer"
+              bg={location.pathname === `/mailbox/${address.id}` ? activeBg : undefined}
+              _hover={{ bg: hoverBg }}
+              onClick={() => navigate(`/mailbox/${address.id}`)}
+              role="group"
+              borderRadius="md"
+              position="relative"
+            >
               <Text
                 fontSize="sm"
-                color="gray.300"
-                textAlign="left"
+                fontWeight="medium"
                 noOfLines={1}
-                flex="1"
               >
-                {addr.address}
+                {address.customName || address.address.split('@')[0]}
               </Text>
-              <ButtonGroup size="xs" variant="ghost" spacing={1} opacity={0} _groupHover={{ opacity: 1 }}>
-                <Tooltip label="Copy Address" placement="top">
-                  <Button
-                    colorScheme="brand"
-                    onClick={(e) => copyAddress(addr.address, e)}
-                  >
-                    <Icon as={FaCopy} />
-                  </Button>
-                </Tooltip>
-                <Tooltip label="Delete Address" placement="top">
-                  <Button
-                    colorScheme="red"
-                    onClick={(e) => deleteAddress(addr.id, e)}
-                  >
-                    <Icon as={FaTrash} />
-                  </Button>
-                </Tooltip>
-              </ButtonGroup>
-            </Flex>
+              {address.unreadCount > 0 && (
+                <Badge colorScheme="brand" ml={2}>
+                  {address.unreadCount}
+                </Badge>
+              )}
+              <Text
+                position="absolute"
+                top={2}
+                right={2}
+                color="gray.400"
+                cursor="pointer"
+                visibility="hidden"
+                _groupHover={{ visibility: 'visible' }}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  deleteAddress(address.id)
+                }}
+                _hover={{ color: 'red.400' }}
+              >
+                ×
+              </Text>
+              <Button
+                size="xs"
+                variant="ghost"
+                leftIcon={<FaCopy />}
+                mt={2}
+                visibility="hidden"
+                _groupHover={{ visibility: 'visible' }}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  navigator.clipboard.writeText(address.address)
+                  toast({
+                    title: 'Copied to clipboard',
+                    status: 'success',
+                    duration: 2000,
+                  })
+                }}
+              >
+                Copy
+              </Button>
+            </Box>
           </Box>
         ))}
       </VStack>

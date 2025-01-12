@@ -17,62 +17,129 @@ import {
   ModalFooter,
   FormControl,
   FormLabel,
+  useToast,
+  Spinner,
+  IconButton,
 } from '@chakra-ui/react'
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { FaPlus, FaTrash } from 'react-icons/fa'
+import { FaPlus, FaTimes, FaCopy } from 'react-icons/fa'
+import { supabase } from '../lib/supabase'
+import { useAuth } from '../contexts/AuthContext'
 
 interface EmailAddress {
   id: string
   address: string
-  createdAt: Date
+  created_at: string
   customName?: string
 }
 
 const Dashboard = () => {
   const [emailAddresses, setEmailAddresses] = useState<EmailAddress[]>([])
   const [newEmailName, setNewEmailName] = useState('')
+  const [isLoading, setIsLoading] = useState(true)
   const { isOpen, onOpen, onClose } = useDisclosure()
   const navigate = useNavigate()
+  const toast = useToast()
+  const { user } = useAuth()
 
-  // Load initial addresses
+  // Load addresses
   useEffect(() => {
-    // This would normally be an API call
-    const initialAddresses: EmailAddress[] = [
-      { id: '1', address: 'personal@d-mail.temp', createdAt: new Date(), customName: 'Personal' },
-      { id: '2', address: 'newsletter@d-mail.temp', createdAt: new Date(), customName: 'Newsletters' },
-      { id: '3', address: 'shopping@d-mail.temp', createdAt: new Date(), customName: 'Shopping' },
-    ]
-    setEmailAddresses(initialAddresses)
-  }, [])
+    const fetchAddresses = async () => {
+      if (!user) return
 
-  const generateRandomString = (length: number) => {
-    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789'
-    let result = ''
-    for (let i = 0; i < length; i++) {
-      result += chars.charAt(Math.floor(Math.random() * chars.length))
+      try {
+        const { data, error } = await supabase
+          .from('email_addresses')
+          .select('*')
+          .eq('user_id', user.id)
+          .order('created_at', { ascending: false })
+
+        if (error) throw error
+
+        setEmailAddresses(data)
+      } catch (error) {
+        console.error('Error fetching addresses:', error)
+        toast({
+          title: 'Error loading addresses',
+          description: 'Please try again later',
+          status: 'error',
+          duration: 3000,
+          isClosable: true,
+        })
+      } finally {
+        setIsLoading(false)
+      }
     }
-    return result
+
+    fetchAddresses()
+  }, [user, toast])
+
+  const createEmail = async (customName?: string) => {
+    if (!user) return
+
+    try {
+      const address = `${customName?.toLowerCase() || Math.random().toString(36).substring(2, 12)}@d-mail.temp`
+      
+      const { data, error } = await supabase
+        .from('email_addresses')
+        .insert({
+          address,
+          user_id: user.id,
+          is_primary: false,
+        })
+        .select()
+        .single()
+
+      if (error) throw error
+
+      setEmailAddresses(prev => [data, ...prev])
+      onClose()
+      setNewEmailName('')
+      
+      // Navigate to the new email address's mailbox
+      navigate(`/mailbox/${data.id}`)
+    } catch (error) {
+      console.error('Error creating email:', error)
+      toast({
+        title: 'Error creating email',
+        description: 'Please try again later',
+        status: 'error',
+        duration: 3000,
+        isClosable: true,
+      })
+    }
   }
 
-  const createEmail = (customName?: string) => {
-    const name = customName || generateRandomString(10)
-    const newEmail: EmailAddress = {
-      id: generateRandomString(8),
-      address: `${name.toLowerCase()}@d-mail.temp`,
-      createdAt: new Date(),
-      customName: customName
+  const deleteEmail = async (id: string) => {
+    try {
+      const { error } = await supabase
+        .from('email_addresses')
+        .delete()
+        .eq('id', id)
+        .eq('user_id', user?.id)
+
+      if (error) throw error
+
+      setEmailAddresses(prev => prev.filter(email => email.id !== id))
+    } catch (error) {
+      console.error('Error deleting email:', error)
+      toast({
+        title: 'Error deleting email',
+        description: 'Please try again later',
+        status: 'error',
+        duration: 3000,
+        isClosable: true,
+      })
     }
-    setEmailAddresses(prevAddresses => [...prevAddresses, newEmail])
-    onClose()
-    setNewEmailName('')
-    
-    // Navigate to the new email address's mailbox
-    navigate(`/mailbox/${newEmail.id}`)
   }
 
-  const deleteEmail = (id: string) => {
-    setEmailAddresses(prevAddresses => prevAddresses.filter(email => email.id !== id))
+  if (isLoading) {
+    return (
+      <Flex justify="center" align="center" h="200px">
+        <Spinner color="brand.300" size="xl" />
+      </Flex>
+    )
   }
 
   return (
@@ -100,31 +167,60 @@ const Dashboard = () => {
 
       <Grid templateColumns="repeat(auto-fill, minmax(300px, 1fr))" gap={6}>
         {emailAddresses.map(email => (
-          <Card key={email.id} bg="gray.800" borderColor="gray.700" borderWidth={1}>
+          <Card 
+            key={email.id} 
+            bg="gray.800" 
+            borderColor="gray.700" 
+            borderWidth={1}
+            role="group"
+            position="relative"
+            onClick={() => navigate(`/mailbox/${email.id}`)}
+            cursor="pointer"
+            _hover={{ borderColor: 'gray.600' }}
+          >
+            <IconButton
+              icon={<Text fontSize="md">×</Text>}
+              aria-label="Close"
+              position="absolute"
+              right={2}
+              top={2}
+              size="sm"
+              variant="ghost"
+              visibility="hidden"
+              _groupHover={{ visibility: 'visible' }}
+              onClick={(e) => {
+                e.stopPropagation()
+                deleteEmail(email.id)
+              }}
+              color="gray.400"
+              _hover={{ bg: 'transparent', color: 'red.400' }}
+            />
             <CardBody>
               <Flex direction="column" gap={3}>
                 <Heading size="md" color="brand.300">
                   {email.address}
                 </Heading>
                 <Text fontSize="sm" color="gray.400">
-                  Created: {email.createdAt.toLocaleDateString()}
+                  Created: {new Date(email.created_at).toLocaleDateString()}
                 </Text>
-                <Flex gap={3} mt={2}>
-                  <Button
-                    flex={1}
-                    colorScheme="brand"
-                    onClick={() => navigate(`/mailbox/${email.id}`)}
-                  >
-                    Open Mailbox
-                  </Button>
-                  <Button
-                    colorScheme="red"
-                    variant="ghost"
-                    onClick={() => deleteEmail(email.id)}
-                  >
-                    <FaTrash />
-                  </Button>
-                </Flex>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  leftIcon={<FaCopy />}
+                  visibility="hidden"
+                  _groupHover={{ visibility: 'visible' }}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    navigator.clipboard.writeText(email.address)
+                    toast({
+                      title: 'Copied to clipboard',
+                      status: 'success',
+                      duration: 2000,
+                    })
+                  }}
+                >
+                  Copy
+                </Button>
               </Flex>
             </CardBody>
           </Card>
