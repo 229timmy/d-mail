@@ -1,13 +1,31 @@
 import express from 'express';
-import { sendEmail } from '../services/emailService';
+import { sendEmail } from '../services/emailService.js';
 import { createClient } from '@supabase/supabase-js';
-import type { Database } from '../types/supabase';
+import type { Database } from '../types/supabase.js';
 
 const router = express.Router();
 const supabase = createClient<Database>(
   process.env.SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_KEY!
 );
+
+// Test email endpoint
+router.post('/test', async (req, res) => {
+  try {
+    await sendEmail({
+      from: process.env.SENDGRID_FROM_EMAIL!,
+      to: process.env.SENDGRID_FROM_EMAIL!, // Sending to yourself for testing
+      subject: 'D-Mail Test Email',
+      text: 'This is a test email from D-Mail',
+      html: '<h1>D-Mail Test</h1><p>This is a test email from D-Mail</p>',
+    });
+
+    res.json({ success: true, message: 'Test email sent successfully' });
+  } catch (error) {
+    console.error('Error sending test email:', error);
+    res.status(500).json({ error: 'Failed to send test email' });
+  }
+});
 
 // Send email
 router.post('/send', async (req, res) => {

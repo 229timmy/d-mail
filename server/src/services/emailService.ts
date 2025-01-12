@@ -1,6 +1,14 @@
 import nodemailer from 'nodemailer';
 import { createClient } from '@supabase/supabase-js';
 import type { Database } from '../types/supabase';
+import dotenv from 'dotenv';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+dotenv.config({ path: `${dirname(dirname(__dirname))}/.env` });
 
 const supabase = createClient<Database>(
   process.env.SUPABASE_URL!,

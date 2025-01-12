@@ -1,14 +1,26 @@
-import { SMTPServer } from 'smtp-server';
+import { SMTPServer, SMTPServerDataStream, SMTPServerSession } from 'smtp-server';
 import { simpleParser } from 'mailparser';
 import { createClient } from '@supabase/supabase-js';
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import type { Database } from './types/supabase';
-import emailRoutes from './routes/emailRoutes';
-import { verifyConnection } from './services/emailService';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+import type { Database } from './types/supabase.js';
+import emailRoutes from './routes/emailRoutes.js';
+import { verifyConnection } from './services/emailService.js';
 
-dotenv.config();
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+dotenv.config({ path: `${dirname(__dirname)}/.env` });
+
+console.log('Environment variables:', {
+  SUPABASE_URL: process.env.SUPABASE_URL,
+  SUPABASE_SERVICE_KEY: process.env.SUPABASE_SERVICE_KEY,
+  API_PORT: process.env.API_PORT,
+  SMTP_PORT: process.env.SMTP_PORT,
+});
 
 const supabase = createClient<Database>(
   process.env.SUPABASE_URL!,
@@ -28,7 +40,7 @@ const server = new SMTPServer({
   disabledCommands: ['AUTH'],
   
   // Handle incoming emails
-  async onData(stream, session, callback) {
+  async onData(stream: SMTPServerDataStream, session: SMTPServerSession, callback: (error?: Error) => void) {
     try {
       // Parse email
       const email = await simpleParser(stream);
@@ -38,19 +50,22 @@ const server = new SMTPServer({
         filename: attachment.filename,
         contentType: attachment.contentType,
         size: attachment.size,
-        // Store attachment content or reference here
       }));
 
       // Calculate basic spam score (can be enhanced later)
       const spamScore = calculateSpamScore(email);
       const isSpam = spamScore > 0.7;
 
+      // Type assertion since we know these will exist due to SMTP protocol
+      const recipientAddress = (session.envelope.rcptTo[0] as any).address as string;
+      const senderAddress = (session.envelope.mailFrom as any).address as string;
+
       // Store email in Supabase
       const { error } = await supabase
         .from('emails')
         .insert({
-          recipient_address: session.envelope.rcptTo[0].address,
-          sender_address: session.envelope.mailFrom.address,
+          recipient_address: recipientAddress,
+          sender_address: senderAddress,
           subject: email.subject || '(No Subject)',
           body_html: email.html || null,
           body_text: email.text || null,
