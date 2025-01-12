@@ -1,0 +1,31 @@
+{
+  "name": "d-mail-server",
+  "version": "1.0.0",
+  "description": "D-Mail server for handling incoming and outgoing emails",
+  "main": "src/index.ts",
+  "type": "module",
+  "scripts": {
+    "start": "node dist/index.js",
+    "dev": "nodemon --exec ts-node src/index.ts",
+    "build": "tsc",
+    "test": "jest"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.47.0",
+    "dotenv": "^16.4.1",
+    "express": "^4.18.2",
+    "mailparser": "^3.6.5",
+    "smtp-server": "^3.13.0",
+    "nodemailer": "^6.9.9"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/mailparser": "^3.4.4",
+    "@types/node": "^20.11.16",
+    "@types/nodemailer": "^6.4.14",
+    "@types/smtp-server": "^3.5.10",
+    "nodemon": "^3.0.3",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  }
+} 
